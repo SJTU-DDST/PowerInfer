@@ -9160,7 +9160,8 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
         return false;
     }
 
-    if (tensor->op == GGML_OP_MUL_MAT) {
+    if (tensor->op == GGML_OP_MUL_MAT || tensor->op == GGML_OP_MUL_MAT_SPARSE_ATTN || tensor->op == GGML_OP_MUL_MAT_SPARSE_ATTN_V1 || 
+        tensor->op == GGML_OP_MUL_MAT_SPARSE_ATTN_V2 || tensor->op == GGML_OP_MUL_MAT_SPARSE_ATTN_V3) {
         if (tensor->src[0]->ne[3] != tensor->src[1]->ne[3]) {
 #ifndef NDEBUG
             fprintf(stderr, "%s: cannot compute %s: src0->ne[3] = %d, src1->ne[3] = %d - fallback to CPU\n", __func__, tensor->name, tensor->src[0]->ne[3], tensor->src[1]->ne[3]);
@@ -9205,6 +9206,10 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
         case GGML_OP_RMS_NORM:
             func = ggml_cuda_rms_norm;
             break;
+        case GGML_OP_MUL_MAT_SPARSE_ATTN:
+        case GGML_OP_MUL_MAT_SPARSE_ATTN_V1:
+        case GGML_OP_MUL_MAT_SPARSE_ATTN_V2:
+        case GGML_OP_MUL_MAT_SPARSE_ATTN_V3:
         case GGML_OP_MUL_MAT:
             if (!any_on_device && !ggml_cuda_can_mul_mat(tensor->src[0], tensor->src[1], tensor)) {
                 return false;

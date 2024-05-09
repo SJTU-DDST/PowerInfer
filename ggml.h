@@ -412,6 +412,10 @@ extern "C" {
 
         GGML_OP_MUL_MAT,
         GGML_OP_MUL_MAT_SPARSE,
+        GGML_OP_MUL_MAT_SPARSE_ATTN,
+        GGML_OP_MUL_MAT_SPARSE_ATTN_V1,
+        GGML_OP_MUL_MAT_SPARSE_ATTN_V2,
+        GGML_OP_MUL_MAT_SPARSE_ATTN_V3,
         GGML_OP_AXPY,
         GGML_OP_OUT_PROD,
 
@@ -1091,6 +1095,26 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
             struct ggml_tensor  * b);
+    GGML_API struct ggml_tensor * ggml_mul_mat_sparse_attn(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * selected_head_idx);
+    GGML_API struct ggml_tensor * ggml_mul_mat_sparse_attn_v1(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * selected_head_idx);
+    GGML_API struct ggml_tensor * ggml_mul_mat_sparse_attn_v2(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * selected_head_idx);
+    GGML_API struct ggml_tensor * ggml_mul_mat_sparse_attn_v3(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * selected_head_idx);
     GGML_API struct ggml_tensor *ggml_mul_mat_idx(
             struct ggml_context *ctx,
             struct ggml_tensor *a,

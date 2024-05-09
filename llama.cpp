@@ -4674,6 +4674,103 @@ static struct ggml_tensor * llm_build_kqv(
     return cur;
 }
 
+// if max_alibi_bias > 0 then apply ALiBi
+/*
+    q --> [n_embd_head, n_tokens, n_head]
+    k --> [n_embd_head, n_kv, n_head_kv]
+    v --> [n_kv, n_embd_head, n_head_kv]
+    kq --> [n_kv, n_tokens, n_head]
+    kqv --> [n_embd_head, n_tokens, n_head] --> [n_embd_head, n_head] --> [n_embd_head * n_head]
+*/
+static struct ggml_tensor * llm_build_kqv_sparse_attn(
+        struct ggml_context * ctx,
+        const llama_hparams & hparams,
+       const llama_kv_cache & kv,
+         struct ggml_tensor * wo,
+         struct ggml_tensor * wo_b,
+         struct ggml_tensor * q_cur,
+         struct ggml_tensor * kq_scale,
+         struct ggml_tensor * kq_mask,
+         struct ggml_tensor * activated_head,
+                    int64_t   n_ctx,
+                    int32_t   n_tokens,
+                    int32_t   n_kv,
+                    float     max_alibi_bias,
+         const llm_build_cb & cb,
+                    int       il) {
+    const int64_t n_embd      = hparams.n_embd;
+    const int64_t n_head      = hparams.n_head;
+    const int64_t n_head_kv   = hparams.n_head_kv;
+    const int64_t n_embd_head = hparams.n_embd_head();
+    const int64_t n_embd_gqa  = hparams.n_embd_gqa();
+
+    struct ggml_tensor * q = ggml_permute(ctx, q_cur, 0, 2, 1, 3);
+    cb(q, "q", il);
+
+    struct ggml_tensor * k =
+        ggml_view_3d(ctx, kv.k,
+                n_embd_head, n_kv, n_head_kv,
+                ggml_element_size(kv.k)*n_embd_gqa,
+                ggml_element_size(kv.k)*n_embd_head,
+                ggml_element_size(kv.k)*n_embd_gqa*n_ctx*il);
+    cb(k, "k", il);
+    if (k_cpy != nullptr) {
+        k->src[1] = k_cpy;
+    }
+
+    struct ggml_tensor * kq = ggml_mul_mat_sparse_attn_v2(ctx, k, q, activated_head);
+    cb(kq, "kq", il);
+
+    kq = ggml_scale(ctx, kq, kq_scale);
+    cb(kq, "kq_scaled", il);
+
+    if (max_alibi_bias > 0.0f) {
+        // TODO: n_head or n_head_kv
+        // TODO: K-shift is likely not working
+        // TODO: change to ggml_add
+        kq = ggml_alibi(ctx, kq, /*n_past*/ 0, n_head, max_alibi_bias);
+        cb(kq, "kq_scaled_alibi", il);
+    }
+
+    kq = ggml_add(ctx, kq, kq_mask);
+    cb(kq, "kq_masked", il);
+
+    kq = ggml_soft_max(ctx, kq);
+    cb(kq, "kq_soft_max", il);
+
+    // split cached v into n_head heads
+    struct ggml_tensor * v =
+        ggml_view_3d(ctx, kv.v,
+                n_kv, n_embd_head, n_head_kv,
+                ggml_element_size(kv.v)*n_ctx,
+                ggml_element_size(kv.v)*n_ctx*n_embd_head,
+                ggml_element_size(kv.v)*n_ctx*n_embd_gqa*il);
+    cb(v, "v", il);
+    if (v_cpy != nullptr) {
+        v->src[1] = v_cpy;
+    }
+
+    struct ggml_tensor * kqv = ggml_mul_mat_sparse_attn_v2(ctx, v, kq, activated_head);
+    cb(kqv, "kqv", il);
+
+    struct ggml_tensor * kqv_merged = ggml_permute(ctx, kqv, 0, 2, 1, 3);
+    cb(kqv_merged, "kqv_merged", il);
+
+    struct ggml_tensor * cur = ggml_cont_2d(ctx, kqv_merged, n_embd, n_tokens);
+    cb(cur, "kqv_merged_cont", il);
+
+    cur = ggml_mul_mat_sparse_attn_v3(ctx, wo, cur, activated_head);
+    if (wo_b) {
+        cb(cur, "kqv_wo", il);
+    }
+
+    if (wo_b) {
+        cur = ggml_add(ctx, cur, wo_b);
+    }
+
+    return cur;
+}
+
 const llm_build_cb no_offload_cb = [](struct ggml_tensor * cur, const char * name, int nl) {
     ggml_set_name(cur, name);
 };
@@ -4794,6 +4891,10 @@ struct llm_build_context {
         struct ggml_tensor * KQ_mask = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_kv, n_tokens, 1);
         cb(KQ_mask, "KQ_mask", -1);
 
+        // predict Activated head
+        struct ggml_tensor * activated_head = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_head);
+        cb(activated_head, "activated_head", -1);
+
         // shift the entire K-cache if needed
         if (do_rope_shift) {
             llm_build_k_shift(ctx0, hparams, cparams, kv_self, gf, LLM_ROPE, n_ctx, n_embd_head, freq_base, freq_scale, cb);
@@ -4810,36 +4911,70 @@ struct llm_build_context {
 
             // self-attention
             {
-                // compute Q and K and RoPE them
-                struct ggml_tensor * Qcur = ggml_mul_mat(ctx0, model.layers[il].wq, cur);
-                cb(Qcur, "Qcur", il);
+                // printf("\nn_tokens: %d\n",n_tokens);
+                if (llama_use_sparse_inference(&model) && n_tokens == 1) {
+                    // compute Q and K and RoPE them
+                    struct ggml_tensor * Qcur = ggml_mul_mat_sparse_attn_v1(ctx0, model.layers[il].wq, cur, activated_head);
+                    cb(Qcur, "Qcur", il);
 
-                struct ggml_tensor * Kcur = ggml_mul_mat(ctx0, model.layers[il].wk, cur);
-                cb(Kcur, "Kcur", il);
+                    struct ggml_tensor * Kcur = ggml_mul_mat(ctx0, model.layers[il].wk, cur);
+                    cb(Kcur, "Kcur", il);
 
-                struct ggml_tensor * Vcur = ggml_mul_mat(ctx0, model.layers[il].wv, cur);
-                cb(Vcur, "Vcur", il);
+                    struct ggml_tensor * Vcur = ggml_mul_mat(ctx0, model.layers[il].wv, cur);
+                    cb(Vcur, "Vcur", il);
 
-                Qcur = ggml_rope_custom(
-                    ctx0, ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens), inp_pos,
-                    n_embd_head, 0, 0, n_orig_ctx, freq_base, freq_scale,
-                    ext_factor, attn_factor, beta_fast, beta_slow
-                );
-                cb(Qcur, "Qcur", il);
+                    Qcur = ggml_rope_custom(
+                        ctx0, ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens), inp_pos,
+                        n_embd_head, 0, 0, n_orig_ctx, freq_base, freq_scale,
+                        ext_factor, attn_factor, beta_fast, beta_slow
+                    );
+                    cb(Qcur, "Qcur", il);
 
-                Kcur = ggml_rope_custom(
-                    ctx0, ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens), inp_pos,
-                    n_embd_head, 0, 0, n_orig_ctx, freq_base, freq_scale,
-                    ext_factor, attn_factor, beta_fast, beta_slow
-                );
-                cb(Kcur, "Kcur", il);
+                    Kcur = ggml_rope_custom(
+                        ctx0, ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens), inp_pos,
+                        n_embd_head, 0, 0, n_orig_ctx, freq_base, freq_scale,
+                        ext_factor, attn_factor, beta_fast, beta_slow
+                    );
+                    cb(Kcur, "Kcur", il);
 
-                std::tie(k_cpy, v_cpy) = llm_build_kv_store(ctx0, hparams, kv_self, gf, Kcur, Vcur, n_ctx, n_tokens, kv_head, cb, il);
+                    std::tie(k_cpy, v_cpy) = llm_build_kv_store(ctx0, hparams, kv_self, gf, Kcur, Vcur, n_ctx, n_tokens, kv_head, cb, il);
 
-                cur = llm_build_kqv(ctx0, hparams, kv_self,
-                        model.layers[il].wo, NULL,
-                        Qcur, KQ_scale, KQ_mask, n_ctx, n_tokens, n_kv, -1.0f, cb, il);
-                cb(cur, "kqv_out", il);
+                    cur = llm_build_kqv_sparse_attn(ctx0, hparams, kv_self,
+                            model.layers[il].wo, NULL,
+                            Qcur, KQ_scale, KQ_mask, activated_head, n_ctx, n_tokens, n_kv, -1.0f, cb, il);
+                    cb(cur, "kqv_out", il);
+                } else {
+                    // compute Q and K and RoPE them
+                    struct ggml_tensor * Qcur = ggml_mul_mat(ctx0, model.layers[il].wq, cur);
+                    cb(Qcur, "Qcur", il);
+
+                    struct ggml_tensor * Kcur = ggml_mul_mat(ctx0, model.layers[il].wk, cur);
+                    cb(Kcur, "Kcur", il);
+
+                    struct ggml_tensor * Vcur = ggml_mul_mat(ctx0, model.layers[il].wv, cur);
+                    cb(Vcur, "Vcur", il);
+
+                    Qcur = ggml_rope_custom(
+                        ctx0, ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens), inp_pos,
+                        n_embd_head, 0, 0, n_orig_ctx, freq_base, freq_scale,
+                        ext_factor, attn_factor, beta_fast, beta_slow
+                    );
+                    cb(Qcur, "Qcur", il);
+
+                    Kcur = ggml_rope_custom(
+                        ctx0, ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens), inp_pos,
+                        n_embd_head, 0, 0, n_orig_ctx, freq_base, freq_scale,
+                        ext_factor, attn_factor, beta_fast, beta_slow
+                    );
+                    cb(Kcur, "Kcur", il);
+
+                    std::tie(k_cpy, v_cpy) = llm_build_kv_store(ctx0, hparams, kv_self, gf, Kcur, Vcur, n_ctx, n_tokens, kv_head, cb, il);
+
+                    cur = llm_build_kqv(ctx0, hparams, kv_self,
+                            model.layers[il].wo, NULL,
+                            Qcur, KQ_scale, KQ_mask, n_ctx, n_tokens, n_kv, -1.0f, cb, il);
+                    cb(cur, "kqv_out", il);
+                }
             }
 
             struct ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
@@ -6037,6 +6172,7 @@ static const std::unordered_map<const char *, llm_offload_func_e> k_offload_map 
     { "pos_embd",                   OFFLOAD_FUNC_NR  },
 
     { "inp_pos",                    OFFLOAD_FUNC_KQ  }, // this is often used for KQ ops (e.g. rope)
+    { "activated_head",             OFFLOAD_FUNC_KQ  },
     { "KQ_scale",                   OFFLOAD_FUNC_KQ  },
     { "KQ_mask",                    OFFLOAD_FUNC_KQ  },
     { "K_shift",                    OFFLOAD_FUNC_KQ  },
@@ -6122,6 +6258,7 @@ static struct ggml_cgraph * llama_build_graph(
     bool alloc_inp_tokens   = false;
     bool alloc_inp_embd     = false;
     bool alloc_inp_pos      = false;
+    bool alloc_activated_head   = false;
     bool alloc_inp_KQ_scale = false;
     bool alloc_inp_KQ_mask  = false;
     bool alloc_inp_K_shift  = false;
@@ -6192,6 +6329,27 @@ static struct ggml_cgraph * llama_build_graph(
             }
 
             alloc_inp_pos = true;
+        }
+
+        if (!alloc_activated_head && strcmp(name, "activated_head") == 0) {
+            ggml_allocr_alloc(lctx.alloc, cur);
+
+            if (!ggml_allocr_is_measure(lctx.alloc)) {
+                const int64_t n_head = cur->ne[0];
+
+                int32_t * data = (int32_t *) cur->data;
+
+                for (int i = 0; i < n_head; ++i) {
+                    // if(i%2){
+                    //     data[i] = 1;
+                    // }else{
+                    //     data[i] = 0;
+                    // }
+                    data[i] = 1;
+                }
+            }
+
+            alloc_activated_head = true;
         }
 
         if (!alloc_inp_KQ_scale && strcmp(name, "KQ_scale") == 0) {

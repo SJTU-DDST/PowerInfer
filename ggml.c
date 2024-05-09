@@ -1773,6 +1773,10 @@ static void ggml_setup_op_has_task_pass(void) {
         p[GGML_OP_ACC                    ] = true;
         p[GGML_OP_MUL_MAT                ] = true;
         p[GGML_OP_MUL_MAT_SPARSE         ] = true;
+        p[GGML_OP_MUL_MAT_SPARSE_ATTN    ] = true;
+        p[GGML_OP_MUL_MAT_SPARSE_ATTN_V1 ] = true;
+        p[GGML_OP_MUL_MAT_SPARSE_ATTN_V2 ] = true;
+        p[GGML_OP_MUL_MAT_SPARSE_ATTN_V3 ] = true;
         p[GGML_OP_AXPY                   ] = true;
         p[GGML_OP_OUT_PROD               ] = true;
         p[GGML_OP_SET                    ] = true;
@@ -4092,6 +4096,114 @@ struct ggml_tensor * ggml_mul_mat(
     result->src[0] = a;
     result->src[1] = b;
     result->src[2] = NULL;
+    result->src[3] = NULL;
+
+    return result;
+}
+
+struct ggml_tensor * ggml_mul_mat_sparse_attn_v1(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * b,
+        struct ggml_tensor  * activated_head) {
+    GGML_ASSERT(ggml_can_mul_mat(a, b));
+    GGML_ASSERT(!ggml_is_transposed(a));
+
+    bool is_node = false;
+
+    if (a->grad || b->grad) {
+        is_node = true;
+    }
+
+    const int64_t ne[4] = { a->ne[1], b->ne[1], b->ne[2], b->ne[3] };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, MAX(a->n_dims, b->n_dims), ne);
+
+    result->op   = GGML_OP_MUL_MAT_SPARSE_ATTN_V1;
+    result->grad = is_node ? ggml_dup_tensor(ctx, result) : NULL;
+    result->src[0] = a;
+    result->src[1] = b;
+    result->src[2] = activated_head;
+    result->src[3] = NULL;
+
+    return result;
+}
+
+struct ggml_tensor * ggml_mul_mat_sparse_attn_v2(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * b,
+        struct ggml_tensor  * activated_head) {
+    GGML_ASSERT(ggml_can_mul_mat(a, b));
+    GGML_ASSERT(!ggml_is_transposed(a));
+
+    bool is_node = false;
+
+    if (a->grad || b->grad) {
+        is_node = true;
+    }
+
+    const int64_t ne[4] = { a->ne[1], b->ne[1], b->ne[2], b->ne[3] };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, MAX(a->n_dims, b->n_dims), ne);
+
+    result->op   = GGML_OP_MUL_MAT_SPARSE_ATTN_V2;
+    result->grad = is_node ? ggml_dup_tensor(ctx, result) : NULL;
+    result->src[0] = a;
+    result->src[1] = b;
+    result->src[2] = activated_head;
+    result->src[3] = NULL;
+
+    return result;
+}
+
+struct ggml_tensor * ggml_mul_mat_sparse_attn_v3(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * b,
+        struct ggml_tensor  * activated_head) {
+    GGML_ASSERT(ggml_can_mul_mat(a, b));
+    GGML_ASSERT(!ggml_is_transposed(a));
+
+    bool is_node = false;
+
+    if (a->grad || b->grad) {
+        is_node = true;
+    }
+
+    const int64_t ne[4] = { a->ne[1], b->ne[1], b->ne[2], b->ne[3] };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, MAX(a->n_dims, b->n_dims), ne);
+
+    result->op   = GGML_OP_MUL_MAT_SPARSE_ATTN_V3;
+    result->grad = is_node ? ggml_dup_tensor(ctx, result) : NULL;
+    result->src[0] = a;
+    result->src[1] = b;
+    result->src[2] = activated_head;
+    result->src[3] = NULL;
+
+    return result;
+}
+
+struct ggml_tensor * ggml_mul_mat_sparse_attn(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * b,
+        struct ggml_tensor  * activated_head) {
+    GGML_ASSERT(ggml_can_mul_mat(a, b));
+    GGML_ASSERT(!ggml_is_transposed(a));
+
+    bool is_node = false;
+
+    if (a->grad || b->grad) {
+        is_node = true;
+    }
+
+    const int64_t ne[4] = { a->ne[1], b->ne[1], b->ne[2], b->ne[3] };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, MAX(a->n_dims, b->n_dims), ne);
+
+    result->op   = GGML_OP_MUL_MAT_SPARSE_ATTN;
+    result->grad = is_node ? ggml_dup_tensor(ctx, result) : NULL;
+    result->src[0] = a;
+    result->src[1] = b;
+    result->src[2] = activated_head;
     result->src[3] = NULL;
 
     return result;
@@ -9806,6 +9918,204 @@ static void ggml_compute_forward_mul_mat(
     }
 }
 
+
+static void ggml_compute_forward_mul_mat_sparse_attn(
+        const struct ggml_compute_params * params,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+              struct ggml_tensor * dst,
+              bool sparse_src0,
+              int sparse_ne,
+              bool init,
+              int64_t lower_bound,
+              int64_t upper_bound
+              ) {
+    int64_t t0 = ggml_perf_time_us();
+    UNUSED(t0);
+
+    GGML_TENSOR_BINARY_OP_LOCALS
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const enum ggml_type type = src0->type;
+
+    const bool src1_cont = ggml_is_contiguous(src1);
+
+    ggml_vec_dot_t    const vec_dot               = type_traits[type].vec_dot;
+    enum ggml_type    const vec_dot_type          = type_traits[type].vec_dot_type;
+    ggml_from_float_t const from_float_to_vec_dot = type_traits[vec_dot_type].from_float;
+
+    GGML_ASSERT((sparse_src0 == true && sparse_ne == 1) || (sparse_src0 == false && sparse_ne == 2) || (sparse_src0 == false && sparse_ne == 0));
+    GGML_ASSERT(ne0 == ne01);
+    GGML_ASSERT(ne1 == ne11);
+    GGML_ASSERT(ne2 == ne12);
+    GGML_ASSERT(ne3 == ne13);
+
+    // we don't support permuted src0 or src1
+    GGML_ASSERT(nb00 == ggml_type_size(type));
+    GGML_ASSERT(nb10 == ggml_type_size(src1->type));
+
+    // dst cannot be transposed or permuted
+    GGML_ASSERT(nb0 == sizeof(float));
+    GGML_ASSERT(nb0 <= nb1);
+    GGML_ASSERT(nb1 <= nb2);
+    GGML_ASSERT(nb2 <= nb3);
+
+    // broadcast factors
+    const int64_t r2 = ne12/ne02;
+    const int64_t r3 = ne13/ne03;
+
+    // nb01 >= nb00 - src0 is not transposed
+    //   compute by src0 rows
+
+    if (params->type == GGML_TASK_INIT) {
+        if (src1->type != vec_dot_type) {
+            char * wdata = params->wdata;
+            const size_t row_size = ne10*ggml_type_size(vec_dot_type)/ggml_blck_size(vec_dot_type);
+
+            for (int64_t i13 = 0; i13 < ne13; ++i13) {
+                for (int64_t i12 = 0; i12 < ne12; ++i12) {
+                    for (int64_t i11 = 0; i11 < ne11; ++i11) {
+                        from_float_to_vec_dot((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) wdata, ne10);
+                        wdata += row_size;
+                    }
+                }
+            }
+        }
+
+        return;
+    }
+
+    if (params->type == GGML_TASK_FINALIZE) {
+        return;
+    }
+
+    const void * wdata    = (src1->type == vec_dot_type) ? src1->data : params->wdata;
+    const size_t row_size = ne10*ggml_type_size(vec_dot_type)/ggml_blck_size(vec_dot_type);
+    // if(params->ith == 0){
+    //     printf("src0->type: %d, src1->type: %d, vec_dot_type: %d, ggml_type_size: %d\n", src0->type, src1->type, 
+    //             vec_dot_type, ggml_type_size(vec_dot_type));
+    // }
+    
+    int64_t nr0, nr1;   // src0 rows, src1 rows
+    int64_t nr0_start, nr1_start;
+
+    int64_t vec_len;
+    bool sub_vec_dot = false;
+
+    if(sparse_src0 == true && sparse_ne == 1){
+        nr0 = upper_bound - lower_bound;
+        nr0_start = lower_bound;
+    }else{
+        nr0 = ne01;
+        nr0_start = 0;
+    }
+
+    if(sparse_src0 == false && sparse_ne == 2){
+        nr1 = ne11 * (upper_bound - lower_bound) * ne13;
+        nr1_start = ne11 * lower_bound * ne13;
+    }else{
+        nr1 = ne11*ne12*ne13;
+        nr1_start = 0;
+    }
+
+    if(sparse_src0 == false && sparse_ne == 0){
+        vec_len = upper_bound - lower_bound;
+        sub_vec_dot = true;
+    }
+
+    //printf("nr0 = %lld, nr1 = %lld\n", nr0, nr1);
+
+    // distribute the thread work across the inner or outer loop based on which one is larger
+
+    const int64_t nth0 = nr0 > nr1 ? nth : 1; // parallelize by src0 rows
+    const int64_t nth1 = nr0 > nr1 ? 1 : nth; // parallelize by src1 rows
+
+    const int64_t ith0 = ith % nth0;
+    const int64_t ith1 = ith / nth0;
+
+    const int64_t dr0 = (nr0 + nth0 - 1)/nth0;
+    const int64_t dr1 = (nr1 + nth1 - 1)/nth1;
+
+    const int64_t ir010 = nr0_start + dr0*ith0;
+    const int64_t ir011 = nr0_start + MIN(ir010 + dr0, nr0);
+
+    const int64_t ir110 = nr1_start + dr1*ith1;
+    const int64_t ir111 = nr1_start + MIN(ir110 + dr1, nr1);
+
+    //printf("ir010 = %6lld, ir011 = %6lld, ir110 = %6lld, ir111 = %6lld\n", ir010, ir011, ir110, ir111);
+
+    // threads with no work simply yield (not sure if it helps)
+    if (ir010 >= ir011 || ir110 >= ir111) {
+        sched_yield();
+        return;
+    }
+
+    assert(ne12 % ne02 == 0);
+    assert(ne13 % ne03 == 0);
+
+    // block-tiling attempt
+    const int64_t blck_0 = 16;
+    const int64_t blck_1 = 16;
+
+    // attempt to reduce false-sharing (does not seem to make a difference)
+    float tmp[16];
+
+    for (int64_t iir1 = ir110; iir1 < ir111; iir1 += blck_1) {
+        for (int64_t iir0 = ir010; iir0 < ir011; iir0 += blck_0) {
+            for (int64_t ir1 = iir1; ir1 < iir1 + blck_1 && ir1 < ir111; ++ir1) {
+                const int64_t i13 = (ir1/(ne12*ne11));
+                const int64_t i12 = (ir1 - i13*ne12*ne11)/ne11;
+                const int64_t i11 = (ir1 - i13*ne12*ne11 - i12*ne11);
+
+                // broadcast src0 into src1
+                const int64_t i03 = i13/r3;
+                const int64_t i02 = i12/r2;
+
+                const int64_t i1 = i11;
+                const int64_t i2 = i12;
+                const int64_t i3 = i13;
+
+                const char * src0_row = (const char *) src0->data + (0 + i02*nb02 + i03*nb03);
+
+                // desc: when src1 is not a contiguous memory block we have to calculate the offset using the strides
+                //       if it is, then we have either copied the data to params->wdata and made it contiguous or we are using
+                //       the original src1 data pointer, so we should index using the indices directly
+                // TODO: this is a bit of a hack, we should probably have a better way to handle this
+                const char * src1_col = (const char *) wdata +
+                    (src1_cont || src1->type != vec_dot_type
+                     ? (i11      + i12*ne11 + i13*ne12*ne11)*row_size
+                     : (i11*nb11 + i12*nb12 + i13*nb13));
+
+                float * dst_col = (float *) ((char *) dst->data + (i1*nb1 + i2*nb2 + i3*nb3));
+
+                //for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir011; ++ir0) {
+                //    vec_dot(ne00, &dst_col[ir0], src0_row + ir0*nb01, src1_col);
+                //}
+                if(sub_vec_dot) {
+                    for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir011; ++ir0) {
+                        vec_dot(vec_len, &tmp[ir0 - iir0], src0_row + ir0*nb01 + lower_bound * ggml_type_size(type)/ggml_blck_size(type), 
+                        src1_col + (src1_cont || src1->type != vec_dot_type ? 
+                        lower_bound * ggml_type_size(vec_dot_type)/ggml_blck_size(vec_dot_type) : lower_bound * nb10));
+                    }
+                } else {
+                    for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir011; ++ir0) {
+                        vec_dot(ne00, &tmp[ir0 - iir0], src0_row + ir0*nb01, src1_col);
+                    }
+                }
+                if(init) {
+                    memcpy(&dst_col[iir0], tmp, (MIN(iir0 + blck_0, ir011) - iir0)*sizeof(float));
+                } else {
+                    for(int64_t i = 0; i < MIN(iir0 + blck_0, ir011) - iir0; i++){
+                        dst_col[iir0 + i] += tmp[i];
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ggml_compute_forward_out_prod
 
 static void ggml_compute_forward_out_prod_f32(
@@ -14886,9 +15196,106 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_group_norm(params, tensor->src[0], tensor);
             } break;
+        case GGML_OP_MUL_MAT_SPARSE_ATTN:
         case GGML_OP_MUL_MAT:
             {
                 ggml_compute_forward_mul_mat(params, tensor->src[0], tensor->src[1], tensor);
+            } break;
+        case GGML_OP_MUL_MAT_SPARSE_ATTN_V1:
+            {
+                const struct ggml_tensor * activated_head = tensor->src[2];
+                int64_t n_head = activated_head->ne[0];
+                int64_t n_embed_head = tensor->src[0]->ne[1] / n_head;
+                int32_t * data = (int32_t *) activated_head->data;
+
+                // if(params->ith == 0){
+                //     printf("GGML_OP_MUL_MAT_SPARSE_ATTN_V1\n");
+                //     printf("n_embed_head: %d, ith: %d, type: %d ",n_embed_head, params->ith, params->type);
+                //     printf("ne00: %d, ne01: %d, ne02: %d, ne03: %d, ",tensor->src[0]->ne[0],tensor->src[0]->ne[1],tensor->src[0]->ne[2],tensor->src[0]->ne[3]);
+                //     printf("ne10: %d, ne11: %d, ne12: %d, ne13: %d\n",tensor->src[1]->ne[0],tensor->src[1]->ne[1],tensor->src[1]->ne[2],tensor->src[1]->ne[3]);
+                // }
+                for(int64_t i = 0; i < n_head; i++){
+                    if(data[i]){
+                        // printf("i: %d, n_head: %d, bool: %d, ith: %d, type: %d\n",i, n_head, data[i], params->ith, params->type);
+                        ggml_compute_forward_mul_mat_sparse_attn(params, tensor->src[0], tensor->src[1], tensor, 
+                                                                true, 1, true, i*n_embed_head, (i+1)*n_embed_head);
+                    }
+                }
+                // if(params->ith == 0){
+                //     for(int i=0;i<10;i++){
+                //         printf("%f ", ((float *)(tensor->data))[i]);
+                //     }
+                //     printf("\n");
+                //     ggml_compute_forward_mul_mat(params, tensor->src[0], tensor->src[1], tensor);
+                //     for(int i=0;i<10;i++){
+                //         printf("%f ", ((float *)(tensor->data))[i]);
+                //     }
+                //     printf("\n");
+                // }
+            } break;
+        case GGML_OP_MUL_MAT_SPARSE_ATTN_V2:
+            {
+                const struct ggml_tensor * activated_head = tensor->src[2];
+                int64_t n_head = activated_head->ne[0];
+                int64_t n_embed_head = tensor->src[1]->ne[2] / n_head;
+                int32_t * data = (int32_t *) activated_head->data;
+
+                // if(params->ith == 0){
+                //     printf("GGML_OP_MUL_MAT_SPARSE_ATTN_V2\n");
+                //     printf("n_embed_head: %d, ith: %d, type: %d ",n_embed_head, params->ith, params->type);
+                //     printf("ne00: %d, ne01: %d, ne02: %d, ne03: %d, ",tensor->src[0]->ne[0],tensor->src[0]->ne[1],tensor->src[0]->ne[2],tensor->src[0]->ne[3]);
+                //     printf("ne10: %d, ne11: %d, ne12: %d, ne13: %d\n",tensor->src[1]->ne[0],tensor->src[1]->ne[1],tensor->src[1]->ne[2],tensor->src[1]->ne[3]);
+                // }
+                for(int64_t i = 0; i < n_head; i++){
+                    if(data[i]){
+                        ggml_compute_forward_mul_mat_sparse_attn(params, tensor->src[0], tensor->src[1], tensor, 
+                                                                false, 2, true, i*n_embed_head, (i+1)*n_embed_head);
+                    }
+                }
+                // if(params->ith == 0){
+                //     for(int i=0;i<10;i++){
+                //         printf("%f ", ((float *)(tensor->data))[i]);
+                //     }
+                //     printf("\n");
+                //     ggml_compute_forward_mul_mat(params, tensor->src[0], tensor->src[1], tensor);
+                //     for(int i=0;i<10;i++){
+                //         printf("%f ", ((float *)(tensor->data))[i]);
+                //     }
+                //     printf("\n");
+                // }
+            } break;
+        case GGML_OP_MUL_MAT_SPARSE_ATTN_V3:
+            {
+                const struct ggml_tensor * activated_head = tensor->src[2];
+                int64_t n_head = activated_head->ne[0];
+                int64_t n_embed_head = tensor->src[1]->ne[0] / n_head;
+                int32_t * data = (int32_t *) activated_head->data;
+                bool init = true;
+
+                // if(params->ith == 0){
+                //     printf("GGML_OP_MUL_MAT_SPARSE_ATTN_V3\n");
+                //     printf("n_embed_head: %d, ith: %d, type: %d ",n_embed_head, params->ith, params->type);
+                //     printf("ne00: %d, ne01: %d, ne02: %d, ne03: %d, ",tensor->src[0]->ne[0],tensor->src[0]->ne[1],tensor->src[0]->ne[2],tensor->src[0]->ne[3]);
+                //     printf("ne10: %d, ne11: %d, ne12: %d, ne13: %d\n",tensor->src[1]->ne[0],tensor->src[1]->ne[1],tensor->src[1]->ne[2],tensor->src[1]->ne[3]);
+                // }
+                for(int64_t i = 0; i < n_head; i++){
+                    if(data[i]){
+                        ggml_compute_forward_mul_mat_sparse_attn(params, tensor->src[0], tensor->src[1], tensor, 
+                                                                false, 0, init, i*n_embed_head, (i+1)*n_embed_head);
+                        init = false;
+                    }
+                }
+                // if(params->ith == 0){
+                //     for(int i=0;i<10;i++){
+                //         printf("%f ", ((float *)(tensor->data))[i]);
+                //     }
+                //     printf("\n");
+                //     ggml_compute_forward_mul_mat(params, tensor->src[0], tensor->src[1], tensor);
+                //     for(int i=0;i<10;i++){
+                //         printf("%f ", ((float *)(tensor->data))[i]);
+                //     }
+                //     printf("\n");
+                // }
             } break;
         case GGML_OP_MUL_MAT_SPARSE:
             {
@@ -14985,6 +15392,9 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_SOFT_MAX:
             {
+                // if(params->ith==0){
+                //     printf("GGML_OP_SOFT_MAX\n");
+                // }
                 ggml_compute_forward_soft_max(params, tensor->src[0], tensor);
             } break;
         case GGML_OP_SOFT_MAX_BACK:
@@ -15625,6 +16035,10 @@ static void ggml_compute_backward(struct ggml_context * ctx, struct ggml_tensor 
             } break;
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_SPARSE:
+        case GGML_OP_MUL_MAT_SPARSE_ATTN:
+        case GGML_OP_MUL_MAT_SPARSE_ATTN_V1:
+        case GGML_OP_MUL_MAT_SPARSE_ATTN_V2:
+        case GGML_OP_MUL_MAT_SPARSE_ATTN_V3:
         case GGML_OP_AXPY:
             {
                 // https://cs231n.github.io/optimization-2/#staged
@@ -16678,6 +17092,10 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
                 n_tasks = n_threads;
             } break;
         case GGML_OP_MUL_MAT:
+        case GGML_OP_MUL_MAT_SPARSE_ATTN:
+        case GGML_OP_MUL_MAT_SPARSE_ATTN_V1:
+        case GGML_OP_MUL_MAT_SPARSE_ATTN_V2:
+        case GGML_OP_MUL_MAT_SPARSE_ATTN_V3:
             {
                 n_tasks = n_threads;
 
@@ -17229,6 +17647,10 @@ struct ggml_cplan ggml_graph_plan(struct ggml_cgraph * cgraph, int n_threads) {
                 } break;
             case GGML_OP_MUL_MAT:
             case GGML_OP_MUL_MAT_SPARSE:
+            case GGML_OP_MUL_MAT_SPARSE_ATTN:
+            case GGML_OP_MUL_MAT_SPARSE_ATTN_V1:
+            case GGML_OP_MUL_MAT_SPARSE_ATTN_V2:
+            case GGML_OP_MUL_MAT_SPARSE_ATTN_V3:
                 {
                     const enum ggml_type vec_dot_type = type_traits[node->src[0]->type].vec_dot_type;
 
