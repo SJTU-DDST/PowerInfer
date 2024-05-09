@@ -1,0 +1,1249 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="390" onload="init(evt)" viewBox="0 0 1200 390" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="390.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="373" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="373" > </text>
+<g id="frames">
+<g >
+<title>sum_i16_pairs_float (11,709,221,587 samples, 0.19%)</title><rect x="937.8" y="213" width="2.2" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="940.83" y="223.5" ></text>
+</g>
+<g >
+<title>load_balance (685,303,293 samples, 0.01%)</title><rect x="1189.1" y="149" width="0.1" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1192.06" y="159.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_q4_0_q8_0 (6,250,214,781 samples, 0.10%)</title><rect x="106.4" y="133" width="1.2" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="109.42" y="143.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_q4_0_q8_0 (70,625,672,836 samples, 1.12%)</title><rect x="92.7" y="149" width="13.2" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="95.70" y="159.5" ></text>
+</g>
+<g >
+<title>smp_apic_timer_interrupt (680,468,985 samples, 0.01%)</title><rect x="734.8" y="197" width="0.1" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="737.77" y="207.5" ></text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (129,419,136,656 samples, 2.06%)</title><rect x="40.4" y="133" width="24.3" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="43.44" y="143.5" >b..</text>
+</g>
+<g >
+<title>mul_sum_us8_pairs_float (155,354,362,663 samples, 2.47%)</title><rect x="1155.7" y="213" width="29.2" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="1158.73" y="223.5" >mu..</text>
+</g>
+<g >
+<title>ext4_file_write_iter (1,640,295,131 samples, 0.03%)</title><rect x="1188.4" y="85" width="0.3" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="1191.41" y="95.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_relu_f32 (749,251,545 samples, 0.01%)</title><rect x="1188.1" y="229" width="0.1" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1191.05" y="239.5" ></text>
+</g>
+<g >
+<title>mul_sum_us8_pairs_float (1,280,244,719 samples, 0.02%)</title><rect x="107.3" y="101" width="0.3" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="110.34" y="111.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (74,661,259,069 samples, 1.19%)</title><rect x="734.9" y="229" width="14.0" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="737.93" y="239.5" ></text>
+</g>
+<g >
+<title>mul_sum_i8_pairs_float (48,150,481,304 samples, 0.77%)</title><rect x="135.8" y="165" width="9.1" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="138.84" y="175.5" ></text>
+</g>
+<g >
+<title>ggml_graph_compute_thread (511,718,678,385 samples, 8.13%)</title><rect x="10.3" y="197" width="95.9" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="13.26" y="207.5" >ggml_graph_..</text>
+</g>
+<g >
+<title>llama_sample_repetition_penalties (988,160,366 samples, 0.02%)</title><rect x="158.1" y="277" width="0.2" height="15.0" fill="rgb(241,165,39)" rx="2" ry="2" />
+<text  x="161.09" y="287.5" ></text>
+</g>
+<g >
+<title>[unknown] (521,576,961,383 samples, 8.29%)</title><rect x="10.2" y="309" width="97.8" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.19" y="319.5" >[unknown]</text>
+</g>
+<g >
+<title>ggml_graph_compute_thread (5,491,579,223,758 samples, 87.29%)</title><rect x="158.3" y="293" width="1030.0" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="161.32" y="303.5" >ggml_graph_compute_thread</text>
+</g>
+<g >
+<title>ggml_graph_compute_thread (7,984,876,844 samples, 0.13%)</title><rect x="106.3" y="181" width="1.5" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="109.33" y="191.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_mat_sparse (73,500,448,189 samples, 1.17%)</title><rect x="92.3" y="165" width="13.8" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="95.29" y="175.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,167,303,003 samples, 0.03%)</title><rect x="1188.4" y="309" width="0.4" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1191.36" y="319.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (4,581,800,227 samples, 0.07%)</title><rect x="1040.7" y="245" width="0.9" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1043.74" y="255.5" ></text>
+</g>
+<g >
+<title>mul_sum_us8_pairs_float (4,642,189,683 samples, 0.07%)</title><rect x="1185.3" y="229" width="0.9" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="1188.30" y="239.5" ></text>
+</g>
+<g >
+<title>llama_decode_internal (7,987,532,275 samples, 0.13%)</title><rect x="106.3" y="229" width="1.5" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="109.33" y="239.5" ></text>
+</g>
+<g >
+<title>start_thread (5,491,623,547,904 samples, 87.29%)</title><rect x="158.3" y="309" width="1030.0" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="161.32" y="319.5" >start_thread</text>
+</g>
+<g >
+<title>[perf_4.19] (1,838,614,839 samples, 0.03%)</title><rect x="1188.4" y="197" width="0.3" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1191.38" y="207.5" ></text>
+</g>
+<g >
+<title>[perf_4.19] (1,987,308,780 samples, 0.03%)</title><rect x="1188.4" y="245" width="0.3" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1191.36" y="255.5" ></text>
+</g>
+<g >
+<title>llama_decode_internal (1,879,027,648 samples, 0.03%)</title><rect x="157.7" y="261" width="0.4" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="160.73" y="271.5" ></text>
+</g>
+<g >
+<title>__libc_write (1,792,003,630 samples, 0.03%)</title><rect x="1188.4" y="181" width="0.3" height="15.0" fill="rgb(238,154,37)" rx="2" ry="2" />
+<text  x="1191.38" y="191.5" ></text>
+</g>
+<g >
+<title>_nohz_idle_balance (1,022,107,851 samples, 0.02%)</title><rect x="1189.0" y="181" width="0.2" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="1192.01" y="191.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_q4_0_q8_0 (1,466,747,189 samples, 0.02%)</title><rect x="157.7" y="165" width="0.3" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="160.74" y="175.5" ></text>
+</g>
+<g >
+<title>perf_4.19 (2,172,875,193 samples, 0.03%)</title><rect x="1188.4" y="325" width="0.4" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="1191.36" y="335.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_f16 (1,083,256,591 samples, 0.02%)</title><rect x="110.8" y="181" width="0.2" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="113.79" y="191.5" ></text>
+</g>
+<g >
+<title>rebalance_domains (804,871,262 samples, 0.01%)</title><rect x="1189.0" y="165" width="0.2" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="1192.04" y="175.5" ></text>
+</g>
+<g >
+<title>ggml_graph_compute (1,877,709,641 samples, 0.03%)</title><rect x="157.7" y="229" width="0.4" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="160.73" y="239.5" ></text>
+</g>
+<g >
+<title>_nohz_idle_balance (1,310,876,006 samples, 0.02%)</title><rect x="1189.7" y="181" width="0.2" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="1192.69" y="191.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (1,237,540,931 samples, 0.02%)</title><rect x="232.9" y="229" width="0.2" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="235.85" y="239.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;int, std::pair&lt;int const, int&gt;, std::allocator&lt;std::pair&lt;int const, int&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;int&gt;, std::hash&lt;int&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::find (871,431,572 samples, 0.01%)</title><rect x="158.1" y="245" width="0.2" height="15.0" fill="rgb(208,18,4)" rx="2" ry="2" />
+<text  x="161.11" y="255.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_rope_f32 (1,626,300,163 samples, 0.03%)</title><rect x="1187.6" y="245" width="0.3" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="1190.61" y="255.5" ></text>
+</g>
+<g >
+<title>sum_i16_pairs_float (2,286,583,729 samples, 0.04%)</title><rect x="1184.9" y="213" width="0.4" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="1187.87" y="223.5" ></text>
+</g>
+<g >
+<title>reschedule_interrupt (1,046,501,832 samples, 0.02%)</title><rect x="1189.0" y="229" width="0.2" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="1192.01" y="239.5" ></text>
+</g>
+<g >
+<title>mul_sum_us8_pairs_float (37,273,419,528 samples, 0.59%)</title><rect x="137.8" y="149" width="7.0" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="140.77" y="159.5" ></text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (14,241,702,817 samples, 0.23%)</title><rect x="152.8" y="165" width="2.7" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="155.85" y="175.5" ></text>
+</g>
+<g >
+<title>[perf_4.19] (1,985,684,840 samples, 0.03%)</title><rect x="1188.4" y="229" width="0.3" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1191.36" y="239.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward (7,623,172,871 samples, 0.12%)</title><rect x="106.4" y="165" width="1.4" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="109.40" y="175.5" ></text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (2,277,566,225 samples, 0.04%)</title><rect x="106.8" y="117" width="0.4" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="109.82" y="127.5" ></text>
+</g>
+<g >
+<title>llama_decode (512,233,206,490 samples, 8.14%)</title><rect x="10.2" y="261" width="96.1" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="13.22" y="271.5" >llama_decode</text>
+</g>
+<g >
+<title>hsum_float_8 (8,442,708,369 samples, 0.13%)</title><rect x="748.9" y="229" width="1.6" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="751.94" y="239.5" ></text>
+</g>
+<g >
+<title>load_balance (896,494,228 samples, 0.01%)</title><rect x="1189.8" y="149" width="0.1" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1192.75" y="159.5" ></text>
+</g>
+<g >
+<title>mul_sum_i8_pairs_float (1,661,296,023 samples, 0.03%)</title><rect x="107.3" y="117" width="0.3" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="110.28" y="127.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward (253,238,757,682 samples, 4.03%)</title><rect x="110.2" y="213" width="47.5" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="113.22" y="223.5" >ggml..</text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (26,154,244,697 samples, 0.42%)</title><rect x="97.2" y="133" width="4.9" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="100.22" y="143.5" ></text>
+</g>
+<g >
+<title>mul_sum_i8_pairs_float (1,662,943,100 samples, 0.03%)</title><rect x="145.7" y="181" width="0.4" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="148.75" y="191.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (6,999,675,787 samples, 0.11%)</title><rect x="64.7" y="133" width="1.3" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="67.72" y="143.5" ></text>
+</g>
+<g >
+<title>llama_sampling_sample (1,233,996,683 samples, 0.02%)</title><rect x="158.1" y="293" width="0.2" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="161.08" y="303.5" ></text>
+</g>
+<g >
+<title>mul_sum_us8_pairs_float (14,289,608,216 samples, 0.23%)</title><rect x="103.1" y="117" width="2.7" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="106.15" y="127.5" ></text>
+</g>
+<g >
+<title>__generic_file_write_iter (1,631,234,141 samples, 0.03%)</title><rect x="1188.4" y="69" width="0.3" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="1191.41" y="79.5" ></text>
+</g>
+<g >
+<title>sum_i16_pairs_float (48,210,114,960 samples, 0.77%)</title><rect x="74.5" y="101" width="9.0" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="77.49" y="111.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (16,900,939,984 samples, 0.27%)</title><rect x="1033.5" y="229" width="3.1" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1036.46" y="239.5" ></text>
+</g>
+<g >
+<title>ggml_graph_compute_helper (264,317,029,015 samples, 4.20%)</title><rect x="108.2" y="261" width="49.5" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="111.15" y="271.5" >ggml_..</text>
+</g>
+<g >
+<title>llama_decode (1,879,027,648 samples, 0.03%)</title><rect x="157.7" y="277" width="0.4" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="160.73" y="287.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_soft_max (690,879,514 samples, 0.01%)</title><rect x="1187.9" y="261" width="0.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="1190.92" y="271.5" ></text>
+</g>
+<g >
+<title>mul_sum_i8_pairs_float (18,439,485,247 samples, 0.29%)</title><rect x="102.4" y="133" width="3.5" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="105.41" y="143.5" ></text>
+</g>
+<g >
+<title>sum_i16_pairs_float (589,492,812 samples, 0.01%)</title><rect x="144.8" y="149" width="0.1" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="147.76" y="159.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (23,647,643,940 samples, 0.38%)</title><rect x="224.1" y="245" width="4.4" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="227.06" y="255.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_mat_sparse (40,127,898,062 samples, 0.64%)</title><rect x="150.1" y="197" width="7.6" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="153.14" y="207.5" ></text>
+</g>
+<g >
+<title>secondary_startup_64 (6,526,954,768 samples, 0.10%)</title><rect x="1188.8" y="309" width="1.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="1191.78" y="319.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (2,079,016,086 samples, 0.03%)</title><rect x="1036.6" y="245" width="0.4" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1039.64" y="255.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_mat (3,938,172,054,533 samples, 62.60%)</title><rect x="219.0" y="261" width="738.7" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="222.02" y="271.5" >ggml_compute_forward_mul_mat</text>
+</g>
+<g >
+<title>mul_sum_i8_pairs_float (200,383,998,069 samples, 3.19%)</title><rect x="1147.7" y="229" width="37.6" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="1150.72" y="239.5" >mul..</text>
+</g>
+<g >
+<title>ggml_compute_forward_rope (1,669,037,407 samples, 0.03%)</title><rect x="1187.6" y="261" width="0.3" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="1190.61" y="271.5" ></text>
+</g>
+<g >
+<title>sum_i16_pairs_float (845,384,346 samples, 0.01%)</title><rect x="107.4" y="85" width="0.2" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="110.42" y="95.5" ></text>
+</g>
+<g >
+<title>mul_sum_us8_pairs_float (23,329,347,306 samples, 0.37%)</title><rect x="940.0" y="229" width="4.4" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="943.02" y="239.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_unary (749,251,545 samples, 0.01%)</title><rect x="1188.1" y="261" width="0.1" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="1191.05" y="271.5" ></text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (284,958,896,130 samples, 4.53%)</title><rect x="1091.2" y="229" width="53.5" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="1094.22" y="239.5" >bytes..</text>
+</g>
+<g >
+<title>__libc_start_main (2,166,401,840 samples, 0.03%)</title><rect x="1188.4" y="293" width="0.4" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="1191.36" y="303.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_relu (749,251,545 samples, 0.01%)</title><rect x="1188.1" y="245" width="0.1" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="1191.05" y="255.5" ></text>
+</g>
+<g >
+<title>sum_i16_pairs_float (24,848,406,339 samples, 0.39%)</title><rect x="140.1" y="133" width="4.7" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="143.10" y="143.5" ></text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (128,160,837,243 samples, 2.04%)</title><rect x="1009.4" y="229" width="24.1" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="1012.42" y="239.5" >b..</text>
+</g>
+<g >
+<title>ggml_compute_forward_dup (3,660,291,350 samples, 0.06%)</title><rect x="218.3" y="245" width="0.7" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="221.30" y="255.5" ></text>
+</g>
+<g >
+<title>rebalance_domains (1,045,715,981 samples, 0.02%)</title><rect x="1189.7" y="165" width="0.2" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="1192.73" y="175.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_mat_sparse (802,716,808,732 samples, 12.76%)</title><rect x="1037.0" y="261" width="150.6" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1040.04" y="271.5" >ggml_compute_forwar..</text>
+</g>
+<g >
+<title>find_busiest_group (718,094,047 samples, 0.01%)</title><rect x="1189.8" y="133" width="0.1" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="1192.78" y="143.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_mul (580,311,363 samples, 0.01%)</title><rect x="16.8" y="165" width="0.1" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="19.75" y="175.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_q4_0_q8_0 (3,792,394,910,183 samples, 60.28%)</title><rect x="233.1" y="245" width="711.3" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="236.11" y="255.5" >ggml_vec_dot_q4_0_q8_0</text>
+</g>
+<g >
+<title>__libc_start_main (521,334,230,123 samples, 8.29%)</title><rect x="10.2" y="293" width="97.8" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="13.22" y="303.5" >__libc_star..</text>
+</g>
+<g >
+<title>ksys_write (1,664,006,140 samples, 0.03%)</title><rect x="1188.4" y="133" width="0.3" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="1191.41" y="143.5" ></text>
+</g>
+<g >
+<title>ggml_graph_compute_thread (264,306,971,000 samples, 4.20%)</title><rect x="108.2" y="229" width="49.5" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="111.16" y="239.5" >ggml_..</text>
+</g>
+<g >
+<title>hrtimer_interrupt (614,468,426 samples, 0.01%)</title><rect x="734.8" y="181" width="0.1" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="737.77" y="191.5" ></text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (4,654,139,667 samples, 0.07%)</title><rect x="1039.9" y="245" width="0.8" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="1042.86" y="255.5" ></text>
+</g>
+<g >
+<title>sum_i16_pairs_float (521,052,935,935 samples, 8.28%)</title><rect x="840.1" y="197" width="97.7" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="843.09" y="207.5" >sum_i16_pai..</text>
+</g>
+<g >
+<title>llama_decode_internal (512,225,855,813 samples, 8.14%)</title><rect x="10.2" y="245" width="96.1" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="13.23" y="255.5" >llama_decod..</text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_mat (6,396,248,504 samples, 0.10%)</title><rect x="106.4" y="149" width="1.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="109.40" y="159.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_q4_0_q8_0 (38,485,705,419 samples, 0.61%)</title><rect x="150.4" y="181" width="7.2" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="153.38" y="191.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_q4_0_q8_0 (770,835,827,670 samples, 12.25%)</title><rect x="1041.6" y="245" width="144.6" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="1044.60" y="255.5" >ggml_vec_dot_q4_0_..</text>
+</g>
+<g >
+<title>main (521,331,575,452 samples, 8.29%)</title><rect x="10.2" y="277" width="97.8" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="13.22" y="287.5" >main</text>
+</g>
+<g >
+<title>ggml_graph_compute_helper (511,742,663,456 samples, 8.13%)</title><rect x="10.3" y="229" width="95.9" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="13.26" y="239.5" >ggml_graph_..</text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (66,929,441,945 samples, 1.06%)</title><rect x="122.5" y="165" width="12.6" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="125.54" y="175.5" ></text>
+</g>
+<g >
+<title>ggml_graph_compute (511,739,332,381 samples, 8.13%)</title><rect x="10.3" y="213" width="95.9" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="13.26" y="223.5" >ggml_graph_..</text>
+</g>
+<g >
+<title>do_idle (2,344,288,769 samples, 0.04%)</title><rect x="1188.8" y="261" width="0.4" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1191.78" y="271.5" ></text>
+</g>
+<g >
+<title>ext4_da_write_begin (652,799,331 samples, 0.01%)</title><rect x="1188.4" y="37" width="0.1" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1191.42" y="47.5" ></text>
+</g>
+<g >
+<title>mul_sum_i8_pairs_float (10,068,611,589 samples, 0.16%)</title><rect x="155.7" y="165" width="1.8" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="158.66" y="175.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (1,026,711,534 samples, 0.02%)</title><rect x="1189.0" y="197" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1192.01" y="207.5" ></text>
+</g>
+<g >
+<title>main (6,281,389,819,940 samples, 99.84%)</title><rect x="10.2" y="325" width="1178.1" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="13.19" y="335.5" >main</text>
+</g>
+<g >
+<title>llama_init_from_gpt_params (1,879,027,648 samples, 0.03%)</title><rect x="157.7" y="293" width="0.4" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="160.73" y="303.5" ></text>
+</g>
+<g >
+<title>llama_decode_internal (264,321,685,868 samples, 4.20%)</title><rect x="108.2" y="277" width="49.5" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="111.15" y="287.5" >llama..</text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_mat_sparse (786,109,384 samples, 0.01%)</title><rect x="107.7" y="149" width="0.1" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="110.68" y="159.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_mat (190,679,350,155 samples, 3.03%)</title><rect x="110.3" y="197" width="35.8" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="113.32" y="207.5" >ggm..</text>
+</g>
+<g >
+<title>[perf_4.19] (1,952,166,501 samples, 0.03%)</title><rect x="1188.4" y="213" width="0.3" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1191.36" y="223.5" ></text>
+</g>
+<g >
+<title>sum_i16_pairs_float (1,104,275,346 samples, 0.02%)</title><rect x="83.5" y="117" width="0.2" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="86.54" y="127.5" ></text>
+</g>
+<g >
+<title>mul_sum_i8_pairs_float (653,112,452 samples, 0.01%)</title><rect x="105.9" y="149" width="0.2" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="108.95" y="159.5" ></text>
+</g>
+<g >
+<title>__cosf_fma (633,382,987 samples, 0.01%)</title><rect x="1187.7" y="229" width="0.1" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="1190.71" y="239.5" ></text>
+</g>
+<g >
+<title>irq_exit (1,031,136,808 samples, 0.02%)</title><rect x="1189.0" y="213" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1192.01" y="223.5" ></text>
+</g>
+<g >
+<title>ggml_axpy_q4_0_q8_0 (37,663,817,430 samples, 0.60%)</title><rect x="85.1" y="149" width="7.1" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="88.14" y="159.5" ></text>
+</g>
+<g >
+<title>mul_sum_us8_pairs_float (783,554,835,670 samples, 12.45%)</title><rect x="790.9" y="213" width="146.9" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="793.86" y="223.5" >mul_sum_us8_pairs_..</text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (1,394,632,377,370 samples, 22.17%)</title><rect x="473.3" y="229" width="261.6" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="476.35" y="239.5" >bytes_from_nibbles_32</text>
+</g>
+<g >
+<title>llama_init_from_gpt_params (8,370,194,442 samples, 0.13%)</title><rect x="106.3" y="261" width="1.6" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="109.33" y="271.5" ></text>
+</g>
+<g >
+<title>apic_timer_interrupt (720,881,197 samples, 0.01%)</title><rect x="734.8" y="213" width="0.1" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="737.76" y="223.5" ></text>
+</g>
+<g >
+<title>mul_sum_us8_pairs_float (2,217,074,620 samples, 0.04%)</title><rect x="83.7" y="133" width="0.5" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="86.74" y="143.5" ></text>
+</g>
+<g >
+<title>sum_i16_pairs_float (5,257,386,016 samples, 0.08%)</title><rect x="156.5" y="133" width="1.0" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="159.54" y="143.5" ></text>
+</g>
+<g >
+<title>mul_sum_us8_pairs_float (1,110,075,241 samples, 0.02%)</title><rect x="144.9" y="165" width="0.2" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="147.87" y="175.5" ></text>
+</g>
+<g >
+<title>mul_sum_i8_pairs_float (7,115,294,729 samples, 0.11%)</title><rect x="1186.2" y="245" width="1.3" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="1189.19" y="255.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_f16 (2,329,133,151 samples, 0.04%)</title><rect x="17.7" y="149" width="0.5" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="20.75" y="159.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_mat_axpy_q4_0 (21,600,052,190 samples, 0.34%)</title><rect x="146.1" y="197" width="4.0" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="149.09" y="207.5" ></text>
+</g>
+<g >
+<title>new_sync_write (1,642,636,958 samples, 0.03%)</title><rect x="1188.4" y="101" width="0.3" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="1191.41" y="111.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_q6_K_q8_K (34,982,727,702 samples, 0.56%)</title><rect x="944.4" y="245" width="6.6" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="947.43" y="255.5" ></text>
+</g>
+<g >
+<title>ggml_graph_compute_helper (7,985,540,299 samples, 0.13%)</title><rect x="106.3" y="213" width="1.5" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="109.33" y="223.5" ></text>
+</g>
+<g >
+<title>[perf_4.19] (2,166,401,840 samples, 0.03%)</title><rect x="1188.4" y="261" width="0.4" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1191.36" y="271.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_q4_0_q8_0 (181,733,111,530 samples, 2.89%)</title><rect x="111.0" y="181" width="34.1" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="113.99" y="191.5" >gg..</text>
+</g>
+<g >
+<title>mul_sum_i8_pairs_float (3,244,424,779 samples, 0.05%)</title><rect x="84.4" y="149" width="0.6" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="87.42" y="159.5" ></text>
+</g>
+<g >
+<title>vfs_write (1,657,622,306 samples, 0.03%)</title><rect x="1188.4" y="117" width="0.3" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="1191.41" y="127.5" ></text>
+</g>
+<g >
+<title>start_secondary (4,182,665,999 samples, 0.07%)</title><rect x="1189.2" y="293" width="0.8" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1192.21" y="303.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_mat (363,671,305,273 samples, 5.78%)</title><rect x="16.9" y="165" width="68.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="19.86" y="175.5" >ggml_co..</text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (1,423,381,271 samples, 0.02%)</title><rect x="102.1" y="133" width="0.3" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="105.12" y="143.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_mat (1,573,531,965 samples, 0.03%)</title><rect x="157.7" y="181" width="0.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="160.74" y="191.5" ></text>
+</g>
+<g >
+<title>mul_sum_i8_pairs_float (93,689,834,286 samples, 1.49%)</title><rect x="66.2" y="133" width="17.5" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="69.17" y="143.5" ></text>
+</g>
+<g >
+<title>do_idle (4,181,480,019 samples, 0.07%)</title><rect x="1189.2" y="261" width="0.8" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1192.22" y="271.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (3,573,761,987 samples, 0.06%)</title><rect x="135.1" y="165" width="0.7" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="138.09" y="175.5" ></text>
+</g>
+<g >
+<title>ggml_axpy_q4_0_q8_0 (21,157,320,717 samples, 0.34%)</title><rect x="146.1" y="181" width="4.0" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="149.12" y="191.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_soft_max_f32 (678,193,177 samples, 0.01%)</title><rect x="1187.9" y="245" width="0.2" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1190.92" y="255.5" ></text>
+</g>
+<g >
+<title>cpuidle_enter_state (2,299,856,508 samples, 0.04%)</title><rect x="1188.8" y="245" width="0.4" height="15.0" fill="rgb(221,73,17)" rx="2" ry="2" />
+<text  x="1191.78" y="255.5" ></text>
+</g>
+<g >
+<title>apic_timer_interrupt (613,900,620 samples, 0.01%)</title><rect x="473.2" y="229" width="0.1" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="476.23" y="239.5" ></text>
+</g>
+<g >
+<title>mul_sum_us8_pairs_float (7,843,204,537 samples, 0.12%)</title><rect x="156.1" y="149" width="1.4" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="159.06" y="159.5" ></text>
+</g>
+<g >
+<title>swapper (6,546,331,141 samples, 0.10%)</title><rect x="1188.8" y="325" width="1.2" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="1191.77" y="335.5" ></text>
+</g>
+<g >
+<title>hsum_float_8 (1,290,268,307 samples, 0.02%)</title><rect x="1147.5" y="229" width="0.2" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="1150.48" y="239.5" ></text>
+</g>
+<g >
+<title>ggml_graph_compute (7,985,540,299 samples, 0.13%)</title><rect x="106.3" y="197" width="1.5" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="109.33" y="207.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_mat_axpy_q4_0 (38,489,133,267 samples, 0.61%)</title><rect x="85.1" y="165" width="7.2" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="88.07" y="175.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_mat_axpy_q4_0 (423,123,132,624 samples, 6.73%)</title><rect x="957.7" y="261" width="79.3" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="960.68" y="271.5" >ggml_comp..</text>
+</g>
+<g >
+<title>mul_sum_us8_pairs_float (72,681,867,567 samples, 1.16%)</title><rect x="69.9" y="117" width="13.6" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="72.90" y="127.5" ></text>
+</g>
+<g >
+<title>sum_i16_pairs_float (9,645,228,855 samples, 0.15%)</title><rect x="104.0" y="101" width="1.8" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="107.02" y="111.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;int, std::pair&lt;int const, int&gt;, std::allocator&lt;std::pair&lt;int const, int&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;int&gt;, std::hash&lt;int&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_find_node (566,429,754 samples, 0.01%)</title><rect x="158.1" y="229" width="0.1" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="161.14" y="239.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_cpy (3,660,959,120 samples, 0.06%)</title><rect x="218.3" y="261" width="0.7" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="221.30" y="271.5" ></text>
+</g>
+<g >
+<title>intel_idle (1,175,930,102 samples, 0.02%)</title><rect x="1188.8" y="229" width="0.2" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="1191.79" y="239.5" ></text>
+</g>
+<g >
+<title>[perf_4.19] (2,166,401,840 samples, 0.03%)</title><rect x="1188.4" y="277" width="0.4" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1191.36" y="287.5" ></text>
+</g>
+<g >
+<title>intel_idle (2,321,652,769 samples, 0.04%)</title><rect x="1189.3" y="229" width="0.4" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="1192.26" y="239.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (14,975,068,601 samples, 0.24%)</title><rect x="1144.7" y="229" width="2.8" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1147.67" y="239.5" ></text>
+</g>
+<g >
+<title>ggml_vec_relu_f32 (748,584,156 samples, 0.01%)</title><rect x="1188.1" y="213" width="0.1" height="15.0" fill="rgb(231,124,29)" rx="2" ry="2" />
+<text  x="1191.05" y="223.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward (5,172,421,097,452 samples, 82.22%)</title><rect x="218.1" y="277" width="970.2" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="221.13" y="287.5" >ggml_compute_forward</text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (1,113,047,428 samples, 0.02%)</title><rect x="110.4" y="181" width="0.2" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="113.35" y="191.5" ></text>
+</g>
+<g >
+<title>find_busiest_group (552,057,685 samples, 0.01%)</title><rect x="1189.1" y="133" width="0.1" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="1192.08" y="143.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_mul_f32 (573,639,172 samples, 0.01%)</title><rect x="16.8" y="149" width="0.1" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="19.76" y="159.5" ></text>
+</g>
+<g >
+<title>main (267,499,007,557 samples, 4.25%)</title><rect x="108.1" y="309" width="50.2" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="111.14" y="319.5" >main</text>
+</g>
+<g >
+<title>mul_sum_i8_pairs_float (1,010,344,445,138 samples, 16.06%)</title><rect x="750.5" y="229" width="189.5" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="753.52" y="239.5" >mul_sum_i8_pairs_float</text>
+</g>
+<g >
+<title>mul_sum_i8_pairs_float (35,159,305,714 samples, 0.56%)</title><rect x="951.0" y="245" width="6.6" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="954.01" y="255.5" ></text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (2,182,990,530 samples, 0.03%)</title><rect x="16.9" y="149" width="0.4" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="19.92" y="159.5" ></text>
+</g>
+<g >
+<title>start_kernel (2,344,288,769 samples, 0.04%)</title><rect x="1188.8" y="293" width="0.4" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="1191.78" y="303.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward_dup_f32 (3,636,250,538 samples, 0.06%)</title><rect x="218.3" y="229" width="0.7" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="221.30" y="239.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_q4_0_q8_0 (351,779,211,128 samples, 5.59%)</title><rect x="18.2" y="149" width="66.0" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="21.19" y="159.5" >ggml_ve..</text>
+</g>
+<g >
+<title>ggml_compute_forward (1,839,034,648 samples, 0.03%)</title><rect x="157.7" y="197" width="0.4" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="160.74" y="207.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (1,295,585,667 samples, 0.02%)</title><rect x="92.0" y="133" width="0.2" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="94.96" y="143.5" ></text>
+</g>
+<g >
+<title>std::unordered_map&lt;int, int, std::hash&lt;int&gt;, std::equal_to&lt;int&gt;, std::allocator&lt;std::pair&lt;int const, int&gt; &gt; &gt;::find (882,362,253 samples, 0.01%)</title><rect x="158.1" y="261" width="0.2" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="161.10" y="271.5" ></text>
+</g>
+<g >
+<title>cpu_startup_entry (4,182,665,999 samples, 0.07%)</title><rect x="1189.2" y="277" width="0.8" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="1192.21" y="287.5" ></text>
+</g>
+<g >
+<title>ggml_vec_mul_f32 (555,623,066 samples, 0.01%)</title><rect x="16.8" y="133" width="0.1" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="19.76" y="143.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (698,149,636 samples, 0.01%)</title><rect x="155.5" y="165" width="0.1" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="158.52" y="175.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (1,314,802,205 samples, 0.02%)</title><rect x="1189.7" y="197" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1192.69" y="207.5" ></text>
+</g>
+<g >
+<title>ggml_compute_forward (477,625,050,479 samples, 7.59%)</title><rect x="16.6" y="181" width="89.6" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="19.64" y="191.5" >ggml_compu..</text>
+</g>
+<g >
+<title>llama_decode (264,345,559,832 samples, 4.20%)</title><rect x="108.1" y="293" width="49.6" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="111.15" y="303.5" >llama..</text>
+</g>
+<g >
+<title>cpuidle_enter_state (3,951,276,859 samples, 0.06%)</title><rect x="1189.2" y="245" width="0.8" height="15.0" fill="rgb(221,73,17)" rx="2" ry="2" />
+<text  x="1192.22" y="255.5" ></text>
+</g>
+<g >
+<title>cpu_startup_entry (2,344,288,769 samples, 0.04%)</title><rect x="1188.8" y="277" width="0.4" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="1191.78" y="287.5" ></text>
+</g>
+<g >
+<title>llama_decode (7,987,532,275 samples, 0.13%)</title><rect x="106.3" y="245" width="1.5" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="109.33" y="255.5" ></text>
+</g>
+<g >
+<title>sum_i16_pairs_float (103,529,303,259 samples, 1.65%)</title><rect x="1165.5" y="197" width="19.4" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="1168.45" y="207.5" ></text>
+</g>
+<g >
+<title>ggml_graph_compute_thread (1,877,709,641 samples, 0.03%)</title><rect x="157.7" y="213" width="0.4" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="160.73" y="223.5" ></text>
+</g>
+<g >
+<title>ggml_graph_compute (264,313,027,803 samples, 4.20%)</title><rect x="108.2" y="245" width="49.5" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="111.15" y="255.5" >ggml_..</text>
+</g>
+<g >
+<title>ggml_vec_dot_q6_K_q8_K (3,556,104,112 samples, 0.06%)</title><rect x="145.1" y="181" width="0.6" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="148.08" y="191.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (1,134,953,370 samples, 0.02%)</title><rect x="110.6" y="181" width="0.2" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="113.58" y="191.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_q4_0_q8_0 (738,847,165 samples, 0.01%)</title><rect x="107.7" y="133" width="0.1" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="110.69" y="143.5" ></text>
+</g>
+<g >
+<title>reschedule_interrupt (1,339,215,347 samples, 0.02%)</title><rect x="1189.7" y="229" width="0.2" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="1192.69" y="239.5" ></text>
+</g>
+<g >
+<title>irq_exit (1,318,020,958 samples, 0.02%)</title><rect x="1189.7" y="213" width="0.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1192.69" y="223.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_q6_K_q8_K (1,324,192,831 samples, 0.02%)</title><rect x="84.2" y="149" width="0.2" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="87.17" y="159.5" ></text>
+</g>
+<g >
+<title>ggml_axpy_q4_0_q8_0 (417,170,568,823 samples, 6.63%)</title><rect x="958.4" y="245" width="78.2" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="961.39" y="255.5" >ggml_axpy..</text>
+</g>
+<g >
+<title>all (6,291,236,654,400 samples, 100%)</title><rect x="10.0" y="341" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" ></text>
+</g>
+<g >
+<title>hsum_float_8 (762,678,005 samples, 0.01%)</title><rect x="66.0" y="133" width="0.2" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="69.03" y="143.5" ></text>
+</g>
+<g >
+<title>smp_apic_timer_interrupt (583,660,043 samples, 0.01%)</title><rect x="473.2" y="213" width="0.1" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="476.24" y="223.5" ></text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (23,391,587,546 samples, 0.37%)</title><rect x="219.6" y="245" width="4.4" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="222.57" y="255.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (2,170,325,985 samples, 0.03%)</title><rect x="17.3" y="149" width="0.4" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="20.34" y="159.5" ></text>
+</g>
+<g >
+<title>ggml_vec_dot_f16 (24,602,382,762 samples, 0.39%)</title><rect x="228.5" y="245" width="4.6" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="231.50" y="255.5" ></text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (6,552,083,385 samples, 0.10%)</title><rect x="148.7" y="165" width="1.2" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="151.72" y="175.5" ></text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (2,026,010,267 samples, 0.03%)</title><rect x="958.0" y="245" width="0.4" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="961.01" y="255.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (1,716,254,189 samples, 0.03%)</title><rect x="1188.4" y="165" width="0.3" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="1191.40" y="175.5" ></text>
+</g>
+<g >
+<title>ggml_graph_compute_helper (1,877,709,641 samples, 0.03%)</title><rect x="157.7" y="245" width="0.4" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="160.73" y="255.5" ></text>
+</g>
+<g >
+<title>generic_perform_write (1,616,550,808 samples, 0.03%)</title><rect x="1188.4" y="53" width="0.3" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="1191.41" y="63.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (1,712,433,095 samples, 0.03%)</title><rect x="1188.4" y="149" width="0.3" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1191.40" y="159.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;int, std::pair&lt;int const, int&gt;, std::allocator&lt;std::pair&lt;int const, int&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;int&gt;, std::hash&lt;int&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_find_before_node (544,988,402 samples, 0.01%)</title><rect x="158.1" y="213" width="0.1" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="161.15" y="223.5" ></text>
+</g>
+<g >
+<title>bytes_from_nibbles_32 (11,365,830,230 samples, 0.18%)</title><rect x="89.8" y="133" width="2.2" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="92.83" y="143.5" ></text>
+</g>
+<g >
+<title>ggml_lookup_fp16_to_fp32 (756,751,170 samples, 0.01%)</title><rect x="149.9" y="165" width="0.2" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="152.95" y="175.5" ></text>
+</g>
+<g >
+<title>get_scale_shuffle (1,916,093,161 samples, 0.03%)</title><rect x="950.5" y="229" width="0.4" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="953.50" y="239.5" ></text>
+</g>
+</g>
+</svg>
